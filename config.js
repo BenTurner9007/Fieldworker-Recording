@@ -8,6 +8,6 @@
 // Leave both empty to run on this device only (no sign-in, no sharing).
 
 window.FIELDWORKER_CONFIG = {
-  SUPABASE_URL: '',
-  SUPABASE_ANON_KEY: '',
+  SUPABASE_URL: 'https://dafzpkpjriaqhcbxgnnp.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_2LAWvbmbfWfjvqRMx4HBCg_zEPU3Zdr',
 };
