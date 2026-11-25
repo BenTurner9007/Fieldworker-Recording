@@ -1,9 +1,9 @@
 // Service worker: caches the app so it opens with no signal.
 // Bump VERSION whenever app files change so devices pick up the update.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `fieldworker-${VERSION}`;
 const FILES = [
-  './', './index.html', './manifest.webmanifest', './css/styles.css',
+  './', './index.html', './manifest.webmanifest', './css/styles.css', './config.js', './js/vendor/supabase.js', './js/sync.js',
   './js/app.js', './js/db.js', './js/schema.js', './js/osgb.js', './js/export.js', './js/matrix.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
 ];

@@ -184,3 +184,23 @@ textarea { resize: vertical; }
 }
 .toast.err { background: var(--danger); color: #fff; }
 @keyframes pop { from { opacity: 0; transform: translate(-50%, 10px); } }
+
+/* Sharing */
+.sync {
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: .35em;
+  min-height: 36px; padding: 0 .8em; border-radius: 99px; border: 1px solid rgb(255 255 255 / .35);
+  background: rgb(255 255 255 / .12); color: inherit; font: inherit; font-size: .85rem; font-weight: 600; cursor: pointer;
+}
+.sync.busy span { display: inline-block; }
+.sync.err { background: var(--danger); border-color: var(--danger); color: #fff; }
+.sync.off { opacity: .85; }
+.list a.dupe { box-shadow: inset 4px 0 0 var(--warn); }
+.list .pending { color: var(--warn); font-weight: 700; }
+.list .sum small { color: var(--muted); }
+.list.team .member { display: flex; gap: .8rem; align-items: center; min-height: 54px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.list.team .sum { white-space: normal; }
+.list.team .sum small { display: block; }
+.form.narrow { max-width: 420px; margin: 1rem auto; }
+.form.narrow .field { margin-bottom: 1rem; }
+.thumbs figure.loading img, .thumbs figure.offline img { width: 110px; height: 110px; background: var(--line); }
+.thumbs figure.offline::after { content: 'Not downloaded'; position: absolute; inset: auto 0 6px; text-align: center; font-size: .75rem; color: var(--muted); }

@@ -3,10 +3,13 @@ import { TYPES, PROJECT_FIELDS, RELATIONSHIPS, RECIPROCAL } from './schema.js';
 import { wgs84ToBNG, toGridRef } from './osgb.js';
 import { registerCSV, projectGeoJSON, projectBackup, importBackup, download } from './export.js';
 import { checkMatrix } from './matrix.js';
+import * as sync from './sync.js';
 
+const { cloud } = sync;
 const $app = document.getElementById('app');
 const $title = document.getElementById('title');
 const $back = document.getElementById('back');
+const $sync = document.getElementById('sync');
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -84,16 +87,19 @@ async function nextNumber(projectId, type) {
 
 async function viewProjects() {
   setHeader('Fieldworker');
-  const projects = (await db.all('projects')).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+  const projects = (await db.projects()).sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
   $app.innerHTML = `
     <section class="stack">
-      <div class="row">
+      <div class="row wrap">
         <a class="btn primary" href="#/project/new">+ New project</a>
         <label class="btn">Import backup<input type="file" accept=".json,application/json" id="import" hidden></label>
+        ${cloud.enabled ? `<a class="btn" href="#/team">👥 Team &amp; account</a>` : ''}
       </div>
       ${projects.length ? '' : `<div class="empty">
         <h2>No projects yet</h2>
-        <p>Create a project for each site. Everything is stored on this device and works offline — export a backup regularly.</p>
+        <p>${cloud.enabled
+          ? 'Create a project for each site. Records save on this phone first and share with the team whenever there’s signal.'
+          : 'Create a project for each site. Everything is stored on this device and works offline — export a backup regularly.'}</p>
       </div>`}
       <ul class="cards">
         ${projects.map((p) => `
@@ -108,7 +114,7 @@ async function viewProjects() {
     if (!file) return;
     try {
       const p = await importBackup(await file.text());
-      if (p) { toast(`Imported ${p.siteCode}`); location.hash = `#/p/${p.id}`; }
+      if (p) { toast(`Imported ${p.siteCode}`); sync.syncSoon(); location.hash = `#/p/${p.id}`; }
     } catch (err) {
       toast(err.message, 'err');
     }
@@ -132,16 +138,18 @@ async function viewProjectEdit(id) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     readForm(form, PROJECT_FIELDS, project);
-    project.updated = new Date().toISOString();
-    await db.put('projects', project);
+    await db.save('projects', project);
+    sync.syncSoon();
     toast('Project saved');
     location.hash = `#/p/${project.id}`;
   };
   const del = document.getElementById('del');
   if (del) del.onclick = async () => {
-    const typed = prompt(`This deletes ${project.siteCode} and ALL its records and photos from this device.\n\nType the site code to confirm:`);
+    const where = cloud.enabled ? 'for the WHOLE TEAM' : 'from this device';
+    const typed = prompt(`This deletes ${project.siteCode} and ALL its records and photos ${where}.\n\nType the site code to confirm:`);
     if (typed !== project.siteCode) return;
     await db.deleteProject(project.id);
+    sync.syncSoon();
     toast('Project deleted');
     location.hash = '#/';
   };
@@ -149,7 +157,7 @@ async function viewProjectEdit(id) {
 
 async function viewProject(pid, tab) {
   const project = await db.get('projects', pid);
-  if (!project) return notFound();
+  if (!project || project.deleted) return notFound();
   tab = TYPES[tab] || tab === 'export' || tab === 'matrix' ? tab : pref.get('tab', 'context');
   pref.set('tab', tab);
   setHeader(project.siteCode, '#/');
@@ -179,7 +187,14 @@ async function viewProject(pid, tab) {
 
 function renderList($el, project, type, records) {
   const def = TYPES[type];
+  // Two people on different phones can give out the same number while offline.
+  const seen = {};
+  for (const r of records) seen[r.number] = (seen[r.number] || 0) + 1;
+  const dupes = Object.keys(seen).filter((n) => seen[n] > 1);
   $el.innerHTML = `
+    ${dupes.length ? `<div class="panel warn"><h3>Duplicate numbers</h3>
+      <p>${dupes.map((n) => `<strong>${esc(def.prefix + n)}</strong>`).join(', ')} ${dupes.length === 1 ? 'has' : 'have'} been used more than once
+      (probably on two phones while offline). Open each one and renumber one of them.</p></div>` : ''}
     <div class="row">
       <a class="btn primary" href="#/p/${project.id}/${type}/new">+ New ${def.label.toLowerCase()}</a>
       <input type="search" id="q" placeholder="Search ${def.plural.toLowerCase()}…" aria-label="Search">
@@ -188,9 +203,10 @@ function renderList($el, project, type, records) {
     <ul class="list" id="list">
       ${records.map((r) => `
         <li data-search="${esc(JSON.stringify(r).toLowerCase())}">
-          <a href="#/p/${project.id}/${type}/${r.id}">
+          <a href="#/p/${project.id}/${type}/${r.id}"${seen[r.number] > 1 ? ' class="dupe"' : ''}>
             <span class="num">${esc(def.prefix + r.number)}</span>
-            <span class="sum">${esc(def.summary(r) || '—')}</span>
+            <span class="sum">${esc(def.summary(r) || '—')}${cloud.enabled && r.recorder ? ` <small>· ${esc(r.recorder)}</small>` : ''}</span>
+            ${cloud.enabled && r.dirty ? '<span class="pending" title="Not uploaded yet">↑</span>' : ''}
             ${r.location ? '<span class="pin" title="Has location">●</span>' : ''}
           </a>
         </li>`).join('')}
@@ -266,12 +282,14 @@ function renderMatrix($el, project, contexts) {
 async function viewRecord(pid, type, rid) {
   const project = await db.get('projects', pid);
   const def = TYPES[type];
-  if (!project || !def) return notFound();
+  if (!project || project.deleted || !def) return notFound();
   const isNew = rid === 'new';
+  const recorder = pref.get('recorder') || cloud.member?.initials || '';
   const record = isNew
-    ? { id: uid(), projectId: pid, type, number: await nextNumber(pid, type), recorder: pref.get('recorder'), date: today(), relationships: [] }
+    ? { id: uid(), projectId: pid, type, number: await nextNumber(pid, type), recorder, date: today(), relationships: [] }
     : await db.get('records', rid);
-  if (!record) return notFound();
+  if (!record || record.deleted) return notFound();
+  record.relationships ||= [];
   const original = isNew ? null : structuredClone(record);
 
   setHeader(`${isNew ? 'New ' : ''}${def.label} ${def.prefix}${record.number}`, `#/p/${pid}/${type}`);
@@ -372,9 +390,18 @@ async function viewRecord(pid, type, rid) {
       for (const f of items) {
         const fig = document.createElement('figure');
         const img = document.createElement('img');
-        img.src = URL.createObjectURL(f.blob);
-        img.alt = f.name;
-        img.onclick = () => window.open(img.src, '_blank');
+        img.alt = f.name || 'Photo';
+        if (f.blob) {
+          img.src = URL.createObjectURL(f.blob);
+        } else {
+          // Taken on another phone: download it now (and keep it for offline).
+          fig.classList.add('loading');
+          sync.downloadFile(f).then((blob) => {
+            fig.classList.remove('loading');
+            if (blob) { f.blob = blob; img.src = URL.createObjectURL(blob); } else fig.classList.add('offline');
+          });
+        }
+        img.onclick = () => img.src && window.open(img.src, '_blank');
         const x = document.createElement('button');
         x.type = 'button';
         x.className = 'x';
@@ -393,7 +420,8 @@ async function viewRecord(pid, type, rid) {
     drawThumbs();
     document.getElementById('img').onchange = async (e) => {
       for (const file of e.target.files) {
-        pendingImages.push({ id: uid(), recordId: record.id, name: file.name, mime: file.type, blob: await shrink(file) });
+        const blob = await shrink(file);
+        pendingImages.push({ id: uid(), recordId: record.id, projectId: pid, name: file.name, mime: blob.type || file.type, blob });
       }
       e.target.value = '';
       drawThumbs();
@@ -442,16 +470,16 @@ async function viewRecord(pid, type, rid) {
 
     readForm(form, def.fields, record);
     record.number = /^\d+$/.test(number) ? Number(number) : number;
-    record.updated = new Date().toISOString();
     if (record.recorder) pref.set('recorder', record.recorder);
 
-    await db.put('records', record);
-    for (const f of pendingImages) await db.put('files', f);
-    for (const id of removedImages) await db.delete('files', id);
+    await db.save('records', record);
+    for (const f of pendingImages) await db.save('files', f);
+    for (const id of removedImages) await db.removeFile(id);
     if (type === 'context') await syncReciprocals(pid, original, record, siblings);
 
-    project.updated = record.updated;
+    project.updated = record.updated; // local only: sorts recently-used projects to the top
     await db.put('projects', project);
+    sync.syncSoon();
     toast(`${def.label} ${def.prefix}${record.number} saved`);
     return true;
   };
@@ -465,8 +493,9 @@ async function viewRecord(pid, type, rid) {
   };
   const del = document.getElementById('del');
   if (del) del.onclick = async () => {
-    if (!confirm(`Delete ${def.label.toLowerCase()} ${def.prefix}${record.number}? This cannot be undone.`)) return;
+    if (!confirm(`Delete ${def.label.toLowerCase()} ${def.prefix}${record.number}${cloud.enabled ? ' for the whole team' : ''}?`)) return;
     await db.deleteRecord(record.id);
+    sync.syncSoon();
     toast('Deleted');
     location.hash = `#/p/${pid}/${type}`;
   };
@@ -498,7 +527,7 @@ async function syncReciprocals(pid, before, after, contexts) {
     const inv = { rel: RECIPROCAL[r.rel], target: me };
     if (!other.relationships?.some((x) => x.rel === inv.rel && x.target === inv.target)) touch(other).relationships.push(inv);
   }
-  for (const c of changed.values()) await db.put('records', c);
+  for (const c of changed.values()) await db.save('records', c);
 }
 
 function captureGPS(btn, done) {
@@ -552,11 +581,157 @@ function notFound() {
   $app.innerHTML = '<div class="empty"><p>That page or record doesn’t exist.</p><a class="btn" href="#/">Back to projects</a></div>';
 }
 
-// ---------- router ----------
-async function route() {
+// ---------- sharing: sign-in, team, sync status ----------
+
+function viewSignIn() {
+  setHeader('Sign in');
+  $app.innerHTML = `
+    <form class="form narrow" id="login">
+      <p>Sign in to see and share your team’s records. You only need to do this once on each phone — after that it works offline.</p>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required></div>
+      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required></div>
+      <div class="actions"><button class="btn primary">Sign in</button></div>
+      <p class="muted">No login yet? Ask whoever manages the team to add you.</p>
+    </form>`;
+  document.getElementById('login').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    try {
+      await sync.signIn(document.getElementById('email').value.trim(), document.getElementById('pw').value);
+      toast('Signed in');
+      location.hash = '#/';
+      route();
+    } catch (err) {
+      toast(navigator.onLine ? err.message : 'You need signal to sign in the first time', 'err');
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    }
+  };
+}
+
+async function viewTeam() {
+  setHeader('Team & account', '#/');
+  const me = cloud.member;
+  const isAdmin = me?.role === 'admin';
+  $app.innerHTML = `
+    <div class="stack">
+      <div class="panel">
+        <h3>You</h3>
+        <p>${esc(me?.name || '')} <span class="muted">${esc(cloud.user.email)}${me ? ` · ${esc(me.role)}` : ''}</span></p>
+        <div class="row wrap">
+          <button class="btn" id="pw">Change password</button>
+          <button class="btn danger" id="out">Sign out</button>
+        </div>
+      </div>
+      <div class="panel" id="team"><h3>Team</h3><p class="muted">${navigator.onLine ? 'Loading…' : 'Connect to the internet to see the team list.'}</p></div>
+    </div>`;
+
+  document.getElementById('pw').onclick = async () => {
+    const pw = prompt('New password (at least 8 characters):');
+    if (!pw) return;
+    if (pw.length < 8) return toast('Too short — use at least 8 characters', 'err');
+    try { await sync.changePassword(pw); toast('Password changed'); } catch (err) { toast(err.message, 'err'); }
+  };
+  document.getElementById('out').onclick = async () => {
+    const pending = await db.pendingCount();
+    const warn = pending
+      ? `${pending} change(s) on this phone haven’t uploaded yet. They’ll stay on this phone and upload when someone signs in again.\n\nSign out anyway?`
+      : 'Sign out?';
+    if (!confirm(warn)) return;
+    await sync.signOut();
+    location.hash = '#/';
+    route();
+  };
+
+  if (!navigator.onLine) return;
+  const $team = document.getElementById('team');
+  let team;
+  try { team = await sync.listTeam(); } catch (err) { $team.innerHTML = `<h3>Team</h3><p>${esc(err.message)}</p>`; return; }
+
+  $team.innerHTML = `
+    <h3>Team (${team.length})</h3>
+    <ul class="list team">${team.map((m) => `
+      <li><div class="member">
+        <span class="num">${esc(m.initials || '—')}</span>
+        <span class="sum">${esc(m.name || m.email)} <small>${esc(m.email)}${m.role === 'admin' ? ' · admin' : ''}</small></span>
+        ${isAdmin && m.email !== me.email ? `<button class="x" data-rm="${esc(m.email)}" aria-label="Remove ${esc(m.email)}">✕</button>` : ''}
+      </div></li>`).join('')}
+    </ul>
+    ${isAdmin ? `
+      <form id="add" class="form" style="margin-top:1rem">
+        <h3>Add someone</h3>
+        <div class="grid">
+          <div class="field"><label for="m-name">Name</label><input id="m-name" required></div>
+          <div class="field"><label for="m-ini">Initials</label><input id="m-ini" maxlength="4"></div>
+          <div class="field wide"><label for="m-email">Email</label><input id="m-email" type="email" required></div>
+          <div class="field"><label for="m-role">Role</label><select id="m-role"><option value="recorder">Recorder</option><option value="admin">Admin (can manage team)</option></select></div>
+        </div>
+        <div class="actions"><button class="btn primary">Add to team</button></div>
+        <p class="muted"><strong>Then create their login:</strong> Supabase → Authentication → Users → Add user → Create new user, with the same email and a temporary password, and tick <em>Auto confirm user</em>. They can change the password in this screen once signed in.</p>
+      </form>` : '<p class="muted">Only admins can add or remove people.</p>'}`;
+
+  $team.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Remove ${b.dataset.rm} from the team? They’ll lose access straight away. Their records stay.`)) return;
+    try { await sync.removeMember(b.dataset.rm); toast('Removed'); viewTeam(); } catch (err) { toast(err.message, 'err'); }
+  }));
+  const add = document.getElementById('add');
+  if (add) add.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await sync.saveMember({
+        email: document.getElementById('m-email').value,
+        name: document.getElementById('m-name').value.trim(),
+        initials: document.getElementById('m-ini').value.trim().toUpperCase(),
+        role: document.getElementById('m-role').value,
+      });
+      toast('Added to the team');
+      viewTeam();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function drawSyncStatus() {
+  if (!cloud.enabled || !cloud.user) { $sync.hidden = true; return; }
+  const s = sync.status;
+  const n = s.pending;
+  const [icon, text, cls] =
+    s.state === 'syncing' ? ['↻', 'Syncing', 'busy'] :
+    s.state === 'offline' || !navigator.onLine ? ['○', n ? `Offline · ${n}` : 'Offline', 'off'] :
+    s.state === 'error' ? ['!', 'Sync problem', 'err'] :
+    n ? ['↑', `${n} to sync`, 'busy'] :
+    ['✓', 'Synced', 'ok'];
+  $sync.hidden = false;
+  $sync.className = `sync ${cls}`;
+  $sync.innerHTML = `<span aria-hidden="true">${icon}</span> ${text}`;
+  $sync.title = s.error || (s.last ? `Last synced ${new Date(s.last).toLocaleTimeString()}` : '');
+}
+$sync.onclick = () => {
+  if (sync.status.state === 'error') toast(`Sync problem: ${sync.status.error}`, 'err');
+  else if (!navigator.onLine) toast('No signal — your records are safe on this phone and will upload later');
+  sync.syncNow();
+};
+window.addEventListener('fw:status', drawSyncStatus);
+window.addEventListener('online', drawSyncStatus);
+window.addEventListener('offline', drawSyncStatus);
+
+// When other people's changes arrive, refresh the screen — but never under someone mid-edit.
+window.addEventListener('fw:changed', () => {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  window.scrollTo(0, 0);
+  const editing = parts[0] === 'project' || (parts[0] === 'p' && parts.length === 4);
+  if (!editing && parts[0] !== 'team') route({ keepScroll: true });
+});
+window.addEventListener('fw:member', () => { if (location.hash === '#/team') viewTeam(); });
+
+// ---------- router ----------
+async function route(opts = {}) {
+  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (!opts.keepScroll) window.scrollTo(0, 0);
+  drawSyncStatus();
   try {
+    if (cloud.enabled && !cloud.user) return viewSignIn();
+    if (parts[0] === 'team' && cloud.enabled) return await viewTeam();
     if (!parts.length) return await viewProjects();
     if (parts[0] === 'project') return await viewProjectEdit(parts[1] || 'new');
     if (parts[0] === 'p' && parts.length <= 3) return await viewProject(parts[1], parts[2]);
@@ -572,8 +747,8 @@ async function route() {
 window.addEventListener('unhandledrejection', (e) => toast(`Error: ${e.reason?.message || e.reason}`, 'err'));
 window.addEventListener('error', (e) => toast(`Error: ${e.message}`, 'err'));
 
-window.addEventListener('hashchange', route);
-route();
+window.addEventListener('hashchange', () => route());
+sync.initCloud().finally(() => route());
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});

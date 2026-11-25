@@ -94,7 +94,8 @@ export async function projectBackup(project, { includePhotos = true } = {}) {
   if (includePhotos) {
     for (const r of records) {
       for (const f of await db.filesFor(r.id)) {
-        files.push({ id: f.id, recordId: f.recordId, name: f.name, mime: f.mime, data: await blobToDataURL(f.blob) });
+        if (!f.blob) continue; // photo from another phone that hasn't been downloaded here
+        files.push({ id: f.id, recordId: f.recordId, projectId: f.projectId, name: f.name, mime: f.mime, data: await blobToDataURL(f.blob) });
       }
     }
   }
@@ -106,10 +107,18 @@ export async function importBackup(text) {
   if (data.app !== 'fieldworker-recording' || !data.project) throw new Error('This is not a Fieldworker Recording backup file.');
   const existing = await db.get('projects', data.project.id);
   if (existing && !confirm(`Project ${existing.siteCode} already exists on this device. Overwrite it with the backup?`)) return null;
-  await db.put('projects', data.project);
-  for (const r of data.records || []) await db.put('records', r);
+  // Imported items are marked "dirty" so they upload to the shared database (when sharing is on).
+  await db.put('projects', { ...data.project, dirty: true });
+  const projectOf = {};
+  for (const r of data.records || []) {
+    projectOf[r.id] = r.projectId;
+    await db.put('records', { ...r, dirty: true });
+  }
   for (const f of data.files || []) {
-    await db.put('files', { id: f.id, recordId: f.recordId, name: f.name, mime: f.mime, blob: await dataURLToBlob(f.data) });
+    await db.put('files', {
+      id: f.id, recordId: f.recordId, projectId: f.projectId || projectOf[f.recordId], name: f.name, mime: f.mime,
+      blob: await dataURLToBlob(f.data), dirty: true, updated: new Date().toISOString(),
+    });
   }
   return data.project;
 }
