@@ -4,6 +4,7 @@ An offline-first app for recording archaeological fieldwork on a phone or tablet
 
 - **Works with no signal.** Install it to the home screen and it runs fully offline.
 - **Team sharing (optional).** Everyone signs in, and records sync to one shared database whenever there's signal. See [Team sharing setup](#team-sharing-setup). Without it, data stays on the device until you export it.
+- **Feature and intervention registers:** numbers are issued in order. A context picks its feature and intervention from these registers, and typing a number that has not been issued offers to check it out on the spot.
 - **Contexts** have type-specific fields (cut, fill/layer/deposit, masonry), dimensions, levels and interpretation.
 - **Stratigraphic relationships** are two-way: record "1001 fills 1000" and 1000 automatically gets "filled by 1001".
 - **Matrix check** flags stratigraphic loops and contexts that are referenced but not yet recorded. It also gives a rough latest-to-earliest sequence.
@@ -54,7 +55,7 @@ To remove someone, tap ✕ next to their name. Their access stops straight away,
 
 | Want | How |
 |---|---|
-| Spreadsheet of contexts, finds, etc. | Supabase **Table Editor** → pick a `fw_contexts` / `fw_finds` / `fw_samples` / `fw_photos` / `fw_drawings` view → **Export → CSV** |
+| Spreadsheet of contexts, features, finds, etc. | Supabase **Table Editor** → pick a `fw_contexts` / `fw_features` / `fw_interventions` / `fw_finds` / `fw_samples` / `fw_photos` / `fw_drawings` view → **Export → CSV** |
 | Relationships for a Harris matrix | The `fw_relationships` view: one row per relationship |
 | Live layer in **QGIS** | Layer → Add Layer → **PostgreSQL**. Details are in Supabase under **Connect → Session pooler**. Set SSL mode to *require* and add any `fw_` view. Each view has a `geom` point column in EPSG:27700. |
 | **ArcGIS Pro** | Same connection details, via **Insert → Connections → New Database Connection** (PostgreSQL). Or export GeoJSON from the app. |

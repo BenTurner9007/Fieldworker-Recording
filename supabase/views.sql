@@ -12,7 +12,7 @@ select
   nullif(r.data ->> 'contextType', '') as context_type,
   nullif(r.data ->> 'trench', '') as trench,
   nullif(r.data ->> 'feature', '') as feature,
-  nullif(r.data ->> 'sondage', '') as sondage,
+  nullif(r.data ->> 'intervention', '') as intervention,
   nullif(r.data ->> 'colour', '') as colour,
   nullif(r.data ->> 'composition', '') as composition,
   nullif(r.data ->> 'compaction', '') as compaction,
@@ -56,6 +56,65 @@ from public.fw_records r
 join public.fw_projects p on p.id = r.project_id
 where r.type = 'context' and not r.deleted and not p.deleted;
 grant select on public.fw_contexts to authenticated;
+
+drop view if exists public.fw_features;
+create view public.fw_features with (security_invoker = true) as
+select
+  r.id,
+  p.site_code,
+  r.number as number,
+  nullif(r.data ->> 'featureType', '') as feature_type,
+  nullif(r.data ->> 'trench', '') as trench,
+  nullif(r.data ->> 'period', '') as period,
+  nullif(r.data ->> 'interpretation', '') as interpretation,
+  nullif(r.data ->> 'description', '') as description,
+  nullif(r.data ->> 'recorder', '') as recorder,
+  nullif(r.data ->> 'date', '')::date as record_date,
+  nullif(r.data ->> 'notes', '') as notes,
+  r.data -> 'location' ->> 'gridRef' as grid_ref,
+  nullif(r.data -> 'location' ->> 'accuracy', '')::numeric as gps_accuracy_m,
+  r.latitude,
+  r.longitude,
+  r.easting,
+  r.northing,
+  r.geom,
+  r.updated_by,
+  r.updated_at,
+  r.synced_at
+from public.fw_records r
+join public.fw_projects p on p.id = r.project_id
+where r.type = 'feature' and not r.deleted and not p.deleted;
+grant select on public.fw_features to authenticated;
+
+drop view if exists public.fw_interventions;
+create view public.fw_interventions with (security_invoker = true) as
+select
+  r.id,
+  p.site_code,
+  r.number as number,
+  nullif(r.data ->> 'feature', '') as feature,
+  nullif(r.data ->> 'interventionType', '') as intervention_type,
+  nullif(r.data ->> 'trench', '') as trench,
+  nullif(r.data ->> 'percentExcavated', '')::numeric as percent_excavated,
+  nullif(r.data ->> 'orientation', '') as orientation,
+  nullif(r.data ->> 'description', '') as description,
+  nullif(r.data ->> 'recorder', '') as recorder,
+  nullif(r.data ->> 'date', '')::date as record_date,
+  nullif(r.data ->> 'notes', '') as notes,
+  r.data -> 'location' ->> 'gridRef' as grid_ref,
+  nullif(r.data -> 'location' ->> 'accuracy', '')::numeric as gps_accuracy_m,
+  r.latitude,
+  r.longitude,
+  r.easting,
+  r.northing,
+  r.geom,
+  r.updated_by,
+  r.updated_at,
+  r.synced_at
+from public.fw_records r
+join public.fw_projects p on p.id = r.project_id
+where r.type = 'intervention' and not r.deleted and not p.deleted;
+grant select on public.fw_interventions to authenticated;
 
 drop view if exists public.fw_finds;
 create view public.fw_finds with (security_invoker = true) as

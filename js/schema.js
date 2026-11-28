@@ -2,7 +2,8 @@
 // the forms, lists and exports are all generated from it.
 //
 // Field options:
-//   key, label, type (text|textarea|number|select|date|time|checkbox|contextRef)
+//   key, label, type (text|textarea|number|select|date|time|checkbox|ref)
+//   refType (for ref: which register the number must come from, e.g. 'feature')
 //   options (for select), hint, required, wide (span full width), showIf(record)
 
 export const CONTEXT_TYPES = ['Cut', 'Fill', 'Layer', 'Deposit', 'Masonry', 'Timber', 'Skeleton', 'Other'];
@@ -52,8 +53,8 @@ export const TYPES = {
     fields: [
       { key: 'contextType', label: 'Type', type: 'select', options: CONTEXT_TYPES, required: true },
       { key: 'trench', label: 'Trench / Area', type: 'text' },
-      { key: 'feature', label: 'Feature / Group no.', type: 'text' },
-      { key: 'sondage', label: 'Intervention / Segment', type: 'text' },
+      { key: 'feature', label: 'Feature no.', type: 'ref', refType: 'feature' },
+      { key: 'intervention', label: 'Intervention no.', type: 'ref', refType: 'intervention' },
 
       // Deposit description
       { key: 'colour', label: 'Colour', type: 'text', hint: 'e.g. mid greyish brown', showIf: isDeposit },
@@ -94,6 +95,43 @@ export const TYPES = {
     ],
   },
 
+  feature: {
+    label: 'Feature',
+    plural: 'Features',
+    prefix: '',
+    startNumber: 1,
+    location: true,
+    summary: (r) => [r.featureType, r.interpretation].filter(Boolean).join(' — '),
+    fields: [
+      { key: 'featureType', label: 'Type', type: 'select',
+        options: ['Pit', 'Posthole', 'Stakehole', 'Ditch', 'Gully', 'Linear', 'Ring ditch', 'Enclosure ditch', 'Hearth', 'Oven / Kiln', 'Grave', 'Cremation', 'Wall', 'Structure', 'Surface', 'Natural feature', 'Other'] },
+      { key: 'trench', label: 'Trench / Area', type: 'text' },
+      { key: 'period', label: 'Period (provisional)', type: 'text' },
+      { key: 'interpretation', label: 'Interpretation', type: 'text', wide: true },
+      { key: 'description', label: 'Description', type: 'textarea', wide: true },
+      common.recorder, common.date, common.notes,
+    ],
+  },
+
+  intervention: {
+    label: 'Intervention',
+    plural: 'Interventions',
+    prefix: '',
+    startNumber: 1,
+    location: true,
+    summary: (r) => [r.interventionType, r.feature && `feature ${r.feature}`].filter(Boolean).join(' — '),
+    fields: [
+      { key: 'feature', label: 'Feature no.', type: 'ref', refType: 'feature' },
+      { key: 'interventionType', label: 'Type', type: 'select',
+        options: ['Slot', 'Box section', 'Segment', 'Terminus', 'Half-section', 'Quadrant', 'Full excavation', 'Sondage', 'Test pit', 'Other'] },
+      { key: 'trench', label: 'Trench / Area', type: 'text' },
+      { key: 'percentExcavated', label: '% of feature excavated', type: 'number' },
+      { key: 'orientation', label: 'Orientation', type: 'text', hint: 'e.g. NE–SW' },
+      { key: 'description', label: 'Description', type: 'textarea', wide: true },
+      common.recorder, common.date, common.notes,
+    ],
+  },
+
   find: {
     label: 'Find',
     plural: 'Finds',
@@ -102,7 +140,7 @@ export const TYPES = {
     location: true,
     summary: (r) => [r.material, r.objectType, r.context && `context ${r.context}`].filter(Boolean).join(' — '),
     fields: [
-      { key: 'context', label: 'Context', type: 'contextRef', required: true },
+      { key: 'context', label: 'Context', type: 'ref', refType: 'context', required: true },
       { key: 'material', label: 'Material', type: 'select',
         options: ['Pottery', 'CBM', 'Animal bone', 'Human bone', 'Flint / Lithic', 'Glass', 'Copper alloy', 'Iron', 'Lead', 'Silver', 'Gold', 'Worked stone', 'Wood', 'Leather', 'Shell', 'Other'] },
       { key: 'objectType', label: 'Object', type: 'text', hint: 'e.g. brooch, coin, sherd' },
@@ -123,7 +161,7 @@ export const TYPES = {
     location: true,
     summary: (r) => [r.sampleType, r.context && `context ${r.context}`, r.volume && `${r.volume} L`].filter(Boolean).join(' — '),
     fields: [
-      { key: 'context', label: 'Context', type: 'contextRef', required: true },
+      { key: 'context', label: 'Context', type: 'ref', refType: 'context', required: true },
       { key: 'sampleType', label: 'Type', type: 'select',
         options: ['Bulk (environmental)', 'Monolith', 'Kubiena', 'Spot', 'Radiocarbon', 'OSL', 'Archaeomagnetic', 'Other'] },
       { key: 'purpose', label: 'Purpose', type: 'text', hint: 'e.g. charred plant remains' },

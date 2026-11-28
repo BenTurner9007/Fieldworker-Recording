@@ -54,8 +54,8 @@ function fieldHTML(f, value) {
     case 'number':
       input = `<input id="${id}" name="${f.key}" type="number" step="any" inputmode="decimal" value="${esc(value)}"${hint}${req}>`;
       break;
-    case 'contextRef':
-      input = `<input id="${id}" name="${f.key}" type="text" inputmode="numeric" list="context-list" value="${esc(value)}"${hint}${req}>`;
+    case 'ref': // a number that must come from another register (context, feature, intervention)
+      input = `<input id="${id}" name="${f.key}" type="text" inputmode="numeric" list="${f.refType}-list" autocomplete="off" value="${esc(value)}"${hint}${req}>`;
       break;
     default:
       input = `<input id="${id}" name="${f.key}" type="${f.type}" value="${esc(value)}"${hint}${req}>`;
@@ -290,23 +290,36 @@ async function viewRecord(pid, type, rid) {
     : await db.get('records', rid);
   if (!record || record.deleted) return notFound();
   record.relationships ||= [];
+  if (record.sondage && !record.intervention) record.intervention = record.sondage; // renamed field
   const original = isNew ? null : structuredClone(record);
 
   setHeader(`${isNew ? 'New ' : ''}${def.label} ${def.prefix}${record.number}`, `#/p/${pid}/${type}`);
 
-  const contexts = await db.records(pid, 'context');
+  // Registers this form can pick numbers from (always contexts, for relationships).
+  const refTypes = [...new Set(['context', ...def.fields.filter((f) => f.type === 'ref').map((f) => f.refType)])];
+  const registers = {};
+  for (const t of refTypes) registers[t] = await db.records(pid, t);
+  const contexts = registers.context;
+  const linked = await linkedRecords(pid, type, record);
   const pendingImages = []; // images added before save
   const removedImages = [];
   const existingImages = isNew ? [] : await db.filesFor(record.id);
 
   $app.innerHTML = `
-    <datalist id="context-list">${contexts.map((c) => `<option value="${esc(c.number)}">${esc(TYPES.context.summary(c))}</option>`).join('')}</datalist>
+    ${refTypes.map((t) => `<datalist id="${t}-list">${registers[t].map((c) =>
+      `<option value="${esc(c.number)}">${esc(TYPES[t].summary(c))}</option>`).join('')}</datalist>`).join('')}
     <form class="form" id="form" novalidate>
       <div class="grid">
         <div class="field"><label for="f-number">${def.label} number *</label>
           <input id="f-number" name="number" type="text" inputmode="numeric" value="${esc(record.number)}" required></div>
         ${def.fields.map((f) => fieldHTML(f, record[f.key])).join('')}
       </div>
+
+      ${linked.length ? `
+        <fieldset class="panel"><legend>Linked records</legend>
+          ${linked.map(([t, list]) => `<p><span class="muted">${esc(TYPES[t].plural)}:</span> ${list.map((r) =>
+            `<a class="ctx" href="#/p/${pid}/${t}/${r.id}">${esc(TYPES[t].prefix + r.number)}</a>`).join('')}</p>`).join('')}
+        </fieldset>` : ''}
 
       ${type === 'context' ? `
         <fieldset class="panel"><legend>Stratigraphic relationships</legend>
@@ -354,6 +367,15 @@ async function viewRecord(pid, type, rid) {
   };
   form.addEventListener('change', applyShowIf);
   applyShowIf();
+
+  // Picking an intervention fills in its feature (if the feature box is empty).
+  const $int = field(form, 'intervention'), $feat = field(form, 'feature');
+  if ($int && $feat && registers.intervention) {
+    $int.addEventListener('change', () => {
+      const i = registers.intervention.find((r) => String(r.number) === $int.value.trim());
+      if (i?.feature && !$feat.value.trim()) $feat.value = i.feature;
+    });
+  }
 
   // Relationships
   if (type === 'context') {
@@ -468,9 +490,34 @@ async function viewRecord(pid, type, rid) {
       return false;
     }
 
+    // Numbers from other registers must have been issued (checked out) first.
+    const checkOut = [];
+    for (const f of def.fields.filter((x) => x.type === 'ref')) {
+      const el = field(form, f.key);
+      const n = el?.value.trim();
+      if (!n || el.closest('.field')?.hidden) continue;
+      const reg = await db.records(pid, f.refType);
+      if (reg.some((r) => String(r.number) === n)) continue;
+      const t = TYPES[f.refType];
+      if (!confirm(`${t.label} ${t.prefix}${n} hasn’t been issued yet.\n\nCheck it out of the ${t.label.toLowerCase()} register now? (You can fill in its details later.)`)) {
+        el.focus();
+        return false;
+      }
+      checkOut.push([f.refType, n]);
+    }
+
     readForm(form, def.fields, record);
     record.number = /^\d+$/.test(number) ? Number(number) : number;
     if (record.recorder) pref.set('recorder', record.recorder);
+
+    for (const [t, n] of checkOut) {
+      await db.save('records', {
+        id: uid(), projectId: pid, type: t, number: /^\d+$/.test(n) ? Number(n) : n,
+        recorder: record.recorder || '', date: today(), relationships: [],
+        notes: `Number issued from ${def.label.toLowerCase()} ${def.prefix}${number}`,
+        ...(t === 'intervention' && record.feature ? { feature: record.feature } : {}),
+      });
+    }
 
     await db.save('records', record);
     for (const f of pendingImages) await db.save('files', f);
@@ -480,7 +527,8 @@ async function viewRecord(pid, type, rid) {
     project.updated = record.updated; // local only: sorts recently-used projects to the top
     await db.put('projects', project);
     sync.syncSoon();
-    toast(`${def.label} ${def.prefix}${record.number} saved`);
+    const issued = checkOut.map(([t, n]) => `${TYPES[t].label.toLowerCase()} ${n}`).join(', ');
+    toast(`${def.label} ${def.prefix}${record.number} saved${issued ? ` · issued ${issued}` : ''}`);
     return true;
   };
 
@@ -499,6 +547,19 @@ async function viewRecord(pid, type, rid) {
     toast('Deleted');
     location.hash = `#/p/${pid}/${type}`;
   };
+}
+
+/** Records in other registers that point at this one (e.g. contexts in a feature). */
+async function linkedRecords(pid, type, record) {
+  if (record.number === undefined || record.number === '') return [];
+  const out = [];
+  for (const [t, d] of Object.entries(TYPES)) {
+    const keys = d.fields.filter((f) => f.type === 'ref' && f.refType === type).map((f) => f.key);
+    if (!keys.length) continue;
+    const list = (await db.records(pid, t)).filter((r) => r.id !== record.id && keys.some((k) => String(r[k] ?? '') === String(record.number)));
+    if (list.length) out.push([t, list]);
+  }
+  return out;
 }
 
 /** Keep relationships two-way: "1001 cuts 1002" also records "1002 cut by 1001". */
